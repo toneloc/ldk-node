@@ -102,6 +102,7 @@ pub use lightning;
 use lightning::ln::types::ChannelId;
 use lightning::offers::offer::Offer;
 pub use lightning_invoice;
+pub use vss_client;
 
 pub use balance::{BalanceDetails, LightningBalance, PendingSweepBalance};
 pub use error::Error as NodeError;
@@ -1138,6 +1139,8 @@ impl Node {
 	/// After this returns most API methods will return [`Error::NotRunning`].
 	pub fn stop(&self) -> Result<(), Error> {
 		let runtime = self.runtime.write().unwrap().take().ok_or(Error::NotRunning)?;
+		#[cfg(tokio_unstable)]
+		let metrics_runtime = Arc::clone(&runtime);
 
 		log_info!(self.logger, "Shutting down LDK Node with node ID {}...", self.node_id());
 
@@ -1200,7 +1203,7 @@ impl Node {
 			log_trace!(
 				self.logger,
 				"Active runtime tasks left prior to shutdown: {}",
-				runtime.metrics().active_tasks_count()
+				metrics_runtime.metrics().active_tasks_count()
 			);
 		}
 
@@ -1708,9 +1711,21 @@ impl Node {
 		tokio::task::block_in_place(move || {
 			tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(
 				async move {
-					chain_source.update_fee_rate_estimates().await?;
-					chain_source.sync_lightning_wallet(sync_cman, sync_cmon, sync_sweeper).await?;
-					chain_source.sync_onchain_wallet().await?;
+					match chain_source.as_ref() {
+						ChainSource::Esplora { .. } => {
+							chain_source.update_fee_rate_estimates().await?;
+							chain_source
+								.sync_lightning_wallet(sync_cman, sync_cmon, sync_sweeper)
+								.await?;
+							chain_source.sync_onchain_wallet().await?;
+						},
+						ChainSource::BitcoindRpc { .. } => {
+							chain_source.update_fee_rate_estimates().await?;
+							chain_source
+								.poll_and_update_listeners(sync_cman, sync_cmon, sync_sweeper)
+								.await?;
+						},
+					}
 					Ok(())
 				},
 			)
