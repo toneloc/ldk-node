@@ -103,6 +103,7 @@ use lightning::ln::types::ChannelId;
 use lightning::offers::offer::Offer;
 pub use lightning_invoice;
 pub use vss_client;
+use ureq::Agent;
 
 pub use balance::{BalanceDetails, LightningBalance, PendingSweepBalance};
 pub use error::Error as NodeError;
@@ -170,7 +171,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// START - Stable Channels code 
-use reqwest::blocking::Client;
 use serde_json::Value;
 use std::error::Error as OtherError;
 use retry::{retry, delay::Fixed};
@@ -264,7 +264,7 @@ pub fn set_price_feeds() -> Vec<PriceFeed> {
 
 /// Gets latest BTCUSD prices
 pub fn fetch_prices(
-    client: &Client,
+    agent: &Agent,
     price_feeds: &[PriceFeed],
 ) -> Result<Vec<(String, f64)>, Box<dyn OtherError>> {
     let mut prices = Vec::new();
@@ -276,9 +276,9 @@ pub fn fetch_prices(
             .replace("{currency}", "USD");
 
         let response = retry(Fixed::from_millis(300).take(3), || {
-            match client.get(&url).send() {
+            match agent.get(&url).call() {
                 Ok(resp) => {
-                    if resp.status().is_success() {
+					if resp.status() >= 200 && resp.status() < 300 {
                         Ok(resp)
                     } else {
                         Err(format!("Received status code: {}", resp.status()))
@@ -291,7 +291,7 @@ pub fn fetch_prices(
             Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
         })?;
 
-        let json: Value = response.json()?;
+        let json: Value = response.into_json()?;
         let mut data = &json;
 
         for key in &price_feed.jsonpath {
@@ -497,7 +497,7 @@ pub struct StableChannel {
 
 /// Check stability
 fn check_stability(node: &Node, mut sc: StableChannel) -> StableChannel {
-    sc.latest_price = fetch_prices(&Client::new(), &set_price_feeds())
+    sc.latest_price = fetch_prices(&Agent::new(), &set_price_feeds())
         .and_then(|prices| calculate_median_price(prices))
         .unwrap_or(0.0);
 
